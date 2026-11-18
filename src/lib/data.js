@@ -26,6 +26,7 @@ const toContract = (r) => ({
   hl: r.hours_logged == null ? null : +r.hours_logged, cb: +r.cost_budget || 0, ca: +r.cost_actual || 0, eti: +r.cost_to_incur || 0,
   sale: +r.sale_net || 0, billed: +r.billed_net || 0, mSold: r.margin_sold == null ? 0 : +r.margin_sold, mEtc: r.margin_forecast == null ? 0 : +r.margin_forecast,
   start: r.start_date, end: r.end_date, golive: r.go_live, source: r.source, updated: r.updated_at,
+  desc: r.description || '', dm: r.delivery_manager || '', ptype: r.project_type || '', report: r.report_status || '', lastReport: r.last_report || null,
 });
 
 function check(res, what) {

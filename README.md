@@ -34,9 +34,13 @@ A **primeira conta criada vira administradora**. As seguintes ficam aguardando a
 
 ## Dados
 
-- `contracts`: contratos do acompanhamento de projetos. Atualize pela aba Portfólio (editar, novo, ou importar o export .xlsx).
+- `contracts`: contratos do acompanhamento de projetos. Atualize pela aba Portfólio (editar, novo, ou **Importar projetos** com a planilha "Informações dos projetos", uma linha por contrato). Antes de gravar, a importação mostra novos, alterados e excluídos e pede o modo:
+  - **Incremental**: inclui novos e atualiza os contratos do arquivo; células vazias e contratos fora do arquivo são mantidos; nome e cliente editados à mão são preservados.
+  - **Atualização completa**: o arquivo vira o portfólio; todos os campos vêm do arquivo e contratos ausentes são excluídos.
+  Colunas obrigatórias: CONTRATO, GP, CUSTO ORÇADO TIMEFLOW, VALOR APONTAMENTO E DESPESAS SAP, VALOR A INCORRER PELO PROGRESSO, HORAS ORÇADAS. A gravação é feita em uma transação pela função `import_contracts`.
+- `contract_imports`: histórico das importações de projetos.
 - `timeflow_entries`: lançamentos de horas. Suba o relatório na aba Horas (somar ou substituir).
 - `resources` e `resource_metrics`: quadro de recursos e taxas calculadas a partir das horas.
 - `scenarios`: cenários salvos do simulador.
 
-O esquema completo está em `supabase/migrations/0001_schema.sql`.
+O esquema está em `supabase/migrations/` (0001 base, 0002 importação de projetos).

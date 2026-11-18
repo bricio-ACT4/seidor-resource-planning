@@ -36,14 +36,16 @@ export async function mount(root) {
         <div class="row" id="edBtns"></div>
       </div>
       <div class="tablewrap"><table id="tbl"></table></div>
+      <details id="imports" hidden><summary>Histórico de importações</summary><ul class="files" style="margin-top:8px"></ul></details>
     </section></div>
     <dialog id="dlg"></dialog>`;
   drawFilters(); drawQS();
   if (isEditor()) {
-    el.querySelector('#edBtns').innerHTML = `<button id="newC">Novo contrato</button><label class="btn">Importar acompanhamento (.xlsx) <input id="impC" type="file" accept=".xlsx,.csv" hidden></label>`;
+    el.querySelector('#edBtns').innerHTML = `<button id="newC">Novo contrato</button><label class="btn" title="Planilha 'Informações dos projetos' (uma linha por contrato). Você escolhe carga incremental ou atualização completa antes de gravar.">Importar projetos (.xlsx/.csv) <input id="impC" type="file" accept=".xlsx,.csv" hidden></label>`;
     el.querySelector('#newC').onclick = () => editContract(null);
-    el.querySelector('#impC').onchange = (e) => { const f = e.target.files[0]; e.target.value = ''; if (f) importTracking(f); };
+    el.querySelector('#impC').onchange = (e) => { const f = e.target.files[0]; e.target.value = ''; if (f) importPortfolio(f); };
   }
+  drawImports();
   el.querySelector('#q').addEventListener('input', (e) => { F.q = e.target.value; render(); });
   render();
 }
@@ -141,6 +143,7 @@ function flags(r) {
   if (r.hl != null && r.hb && r.hl > r.hb * 1.05) f.push('<span class="chip c-warn">Horas acima do orçado</span>');
   if (r.mEtc < r.mSold - 10) f.push('<span class="chip c-bad">Erosão de margem</span>');
   if (r.status === 'Paused' && r.eti > 0) f.push('<span class="chip c-mut">Paralisado com saldo</span>');
+  if (r.status === 'Execution' && /ATRAS/i.test(r.report)) f.push(`<span class="chip c-warn" title="${r.lastReport ? 'Último status report em ' + fmtDate(r.lastReport) : ''}">Status report atrasado</span>`);
   return f.join('') || '<span class="chip c-good">No plano</span>';
 }
 function table(rows) {
@@ -150,7 +153,7 @@ function table(rows) {
   const head = '<thead><tr>' + COLS.map(([k, l, c]) => `<th class="${c || ''}" data-k="${k}" aria-sort="${sortKey === k ? (sortDir > 0 ? 'ascending' : 'descending') : 'none'}">${l}${sortKey === k ? (sortDir > 0 ? ' ↑' : ' ↓') : ''}</th>`).join('') + (ed ? '<th></th>' : '') + '</tr></thead>';
   const short = (n) => { const p = n.split(' '); return p.length > 1 ? p[0] + ' ' + p.at(-1) : n; };
   const body = rows.map((r) => `<tr>
-    <td><span class="nm">${esc(r.name)}</span><span class="code">${esc(r.code)} · ${esc(r.client)}</span></td>
+    <td><span class="nm" ${r.desc ? `title="${esc(r.desc)}"` : ''}>${esc(r.name)}</span><span class="code">${esc(r.code)} · ${esc(r.client)}</span></td>
     <td>${esc(short(r.pm))}</td>
     <td>${STATUS_LABEL[r.status] || r.status}${r.phase ? `<br><span class="code">${esc(r.phase)}</span>` : ''}</td>
     <td><div class="prog"><div class="bar"><i style="width:${Math.min(r.prog, 100)}%"></i>${r.base != null ? `<b style="left:calc(${Math.min(r.base, 100)}% - 1px)"></b>` : ''}</div><span class="code">${num(r.prog, 0)}% real${r.base != null ? ` · ${num(r.base, 0)}% plano` : ''}</span></div></td>
@@ -202,38 +205,127 @@ function editContract(c) {
   });
 }
 
-// Import the "Acompanhamento de projetos" export (Timeflow/SAP panel).
-async function importTracking(file) {
-  try {
-    const rows = await readTable(file, ['CONTRATO', 'GP']);
-    const C = (...n) => col(rows, ...n);
-    const k = {
-      code: C('CONTRATO'), parent: C('CONTRATO PAI'), proj: C('CÓDIGO PROJETO'), client: C('NOME CLIENTE'), pm: C('GP'), status: C('STATUS CONTRATO'), phase: C('FASE ATUAL PROJETO'),
-      prog: C('% REALIZADO PELO PROGRESSO'), base: C('% ESPERADO LINHA BASE'), hb: C('HORAS ORÇADAS'), pwa: C('HORAS PLANEJADAS PWA'), hl: C('HORAS APONTADAS DECIMAIS'),
-      cb: C('CUSTO ORÇADO TIMEFLOW'), ca: C('VALOR APONTAMENTO E DESPESAS SAP'), eti: C('VALOR A INCORRER PELO PROGRESSO'), sale: C('VALOR VENDA LÍQUIDO TIMEFLOW'), billed: C('FATURADO LÍQUIDO'),
-      ms: C('MARGEM LÍQUIDA VENDA'), mf: C('MARGEM ETC LÍQUIDA PELO PROGRESSO'), start: C('DATA INÍCIO ESTIMADA'), end: C('DATA FIM ESTIMADA'), go: C('GO LIVE'),
-    };
-    const missing = ['cb', 'ca', 'eti', 'hb'].filter((x) => !k[x]);
-    if (missing.length) throw new Error('faltam colunas de custo ou horas no arquivo');
-    const known = new Map(S.contracts.map((c) => [c.code, c]));
-    const stat = (v) => (/PARALIS/i.test(v) ? 'Paused' : /ENCERR|CONCLU|FINALIZ/i.test(v) ? 'Closed' : 'Execution');
-    const out = [];
-    rows.forEach((r) => {
-      const code = String(r[k.code] ?? '').trim();
-      if (!/^[A-Z0-9]{6,}$/.test(code) || /CANCEL/i.test(String(r[k.proj] ?? ''))) return;
-      const old = known.get(code), g = (key, f = parseNum) => (k[key] ? f(r[k[key]]) : null);
-      out.push({
-        code, parent_code: String(r[k.parent] ?? code).trim() || code, client: old?.client || String(r[k.client] ?? '').trim() || code.slice(0, 5),
-        name: old?.name || String(r[k.proj] ?? code).trim(), pm: String(r[k.pm] ?? '').trim(), status: stat(String(r[k.status] ?? '')), phase: String(r[k.phase] ?? '').trim() || null,
-        progress: g('prog') ?? 0, baseline: g('base'), hours_budget: g('hb', parseHours) ?? 0, hours_pwa: g('pwa'), hours_logged: g('hl'),
-        cost_budget: g('cb') ?? 0, cost_actual: g('ca') ?? 0, cost_to_incur: g('eti') ?? 0, sale_net: g('sale') ?? 0, billed_net: g('billed') ?? 0, margin_sold: g('ms'), margin_forecast: g('mf'),
-        start_date: g('start', parseDate), end_date: g('end', parseDate), go_live: g('go', parseDate), source: file.name,
-      });
+// ---------- portfolio upload ----------
+// Reads the "Informações dos projetos" export (one row per contract), previews what changes and applies it
+// as an incremental load (add + update, keep the rest) or a full update (file becomes the portfolio).
+const REQUIRED = { cb: 'CUSTO ORÇADO TIMEFLOW', ca: 'VALOR APONTAMENTO E DESPESAS SAP', eti: 'VALOR A INCORRER PELO PROGRESSO', hb: 'HORAS ORÇADAS' };
+const statusOf = (v) => (/PARALIS/i.test(v) ? 'Paused' : /ENCERR|CONCLU|FINALIZ/i.test(v) ? 'Closed' : v ? 'Execution' : null);
+const pctOf = (v) => (v == null ? null : v > 100 && v <= 10000 ? v / 100 : v); // some rows carry 9600 for 96%
+const txt = (v) => String(v ?? '').trim() || null;
+
+async function parsePortfolio(file) {
+  const rows = await readTable(file, ['CONTRATO', 'GP']);
+  const C = (...n) => col(rows, ...n);
+  const k = {
+    code: C('CONTRATO'), parent: C('CONTRATO PAI'), proj: C('CÓDIGO PROJETO'), client: C('NOME CLIENTE'), pm: C('GP'), status: C('STATUS CONTRATO'), phase: C('FASE ATUAL PROJETO'),
+    prog: C('% REALIZADO PELO PROGRESSO'), base: C('% ESPERADO LINHA BASE'), hb: C('HORAS ORÇADAS'), pwa: C('HORAS PLANEJADAS PWA'), hl: C('HORAS APONTADAS DECIMAIS'),
+    cb: C('CUSTO ORÇADO TIMEFLOW'), ca: C('VALOR APONTAMENTO E DESPESAS SAP'), eti: C('VALOR A INCORRER PELO PROGRESSO'), sale: C('VALOR VENDA LÍQUIDO TIMEFLOW'), billed: C('FATURADO LÍQUIDO'),
+    ms: C('MARGEM LÍQUIDA VENDA'), mf: C('MARGEM ETC LÍQUIDA PELO PROGRESSO'), start: C('DATA INÍCIO ESTIMADA'), end: C('DATA FIM ESTIMADA'), go: C('GO LIVE'),
+    desc: C('DESCRIÇÃO CONTRATO'), dm: C('GERENTE DELIVERY'), ptype: C('TIPO PROJETO'), port: C('PORTFÓLIO SERVIÇO'),
+    saleG: C('VALOR VENDA BRUTO TIMEFLOW'), billedG: C('FATURADO BRUTO SAP'), toBill: C('A FATURAR LÍQUIDO'), recv: C('RECEBIDO BRUTO'),
+    rep: C('ATRASO STATUS REPORT'), lastRep: C('ÚLTIMO STATUS REPORT'),
+  };
+  const missing = Object.keys(REQUIRED).filter((x) => !k[x]).map((x) => REQUIRED[x]);
+  if (missing.length) throw new Error('faltam as colunas ' + missing.join(', '));
+  const out = new Map(), skipped = [];
+  let dup = 0;
+  rows.forEach((r) => {
+    const code = String(r[k.code] ?? '').trim();
+    if (!/^[A-Z0-9]{6,}$/.test(code)) return; // totals, filter notes, blank lines
+    const st = String(r[k.status] ?? '');
+    if (/CANCEL/i.test(st) || /CANCEL/i.test(String(r[k.proj] ?? ''))) { skipped.push(`${code} (cancelado)`); return; }
+    const g = (key, f = parseNum) => (k[key] ? f(r[k[key]]) : null), t = (key) => (k[key] ? txt(r[k[key]]) : null);
+    if (out.has(code)) dup++;
+    out.set(code, {
+      code, parent_code: t('parent') || code, client: t('client'), name: t('proj'), pm: t('pm'), status: statusOf(st), phase: t('phase'),
+      progress: pctOf(g('prog')), baseline: pctOf(g('base')), hours_budget: g('hb', parseHours), hours_pwa: g('pwa'), hours_logged: g('hl'),
+      cost_budget: g('cb'), cost_actual: g('ca'), cost_to_incur: g('eti'), sale_net: g('sale'), billed_net: g('billed'), margin_sold: g('ms'), margin_forecast: g('mf'),
+      start_date: g('start', parseDate), end_date: g('end', parseDate), go_live: g('go', parseDate),
+      description: t('desc'), delivery_manager: t('dm'), project_type: t('ptype'), service_portfolio: t('port'),
+      sale_gross: g('saleG'), billed_gross: g('billedG'), to_bill_net: g('toBill'), received_gross: g('recv'), report_status: t('rep'), last_report: g('lastRep', parseDate),
     });
-    if (!out.length) throw new Error('nenhum contrato reconhecido no arquivo');
-    const { error } = await supabase.from('contracts').upsert(out, { onConflict: 'code' });
-    if (error) throw error;
-    await loadContracts(); drawFilters(); render(); notify('contracts');
-    toast(`${file.name}: ${out.length} contratos atualizados (${out.filter((o) => !known.has(o.code)).length} novos). Contratos que não estão no arquivo foram mantidos.`);
-  } catch (e) { toast(`Não foi possível importar ${file.name}: ${e.message}.`, 'error'); }
+  });
+  if (!out.size) throw new Error('nenhum contrato reconhecido no arquivo (a coluna CONTRATO deve ter códigos como ADUBR000000001)');
+  return { rows: [...out.values()], skipped, dup };
+}
+
+// Fields compared in the preview: [db column, contract key, label]
+const DIFF = [['status', 'status', 'status'], ['pm', 'pm', 'GP'], ['progress', 'prog', 'progresso'], ['baseline', 'base', 'linha de base'], ['hours_budget', 'hb', 'horas orçadas'],
+  ['hours_logged', 'hl', 'horas apontadas'], ['cost_budget', 'cb', 'custo orçado'], ['cost_actual', 'ca', 'custo realizado'], ['cost_to_incur', 'eti', 'a incorrer'],
+  ['sale_net', 'sale', 'venda líquida'], ['billed_net', 'billed', 'faturado'], ['start_date', 'start', 'início'], ['end_date', 'end', 'fim'], ['go_live', 'golive', 'go-live']];
+function diff(row, old, full) {
+  const ch = [];
+  DIFF.forEach(([db, key, label]) => {
+    const nv = row[db], ov = old[key];
+    if (nv == null) { if (full && ov != null && ov !== '' && ov !== 0) ch.push(label); return; }
+    const same = typeof nv === 'number' ? Math.abs(nv - (+ov || 0)) < 0.01 : String(nv) === String(ov ?? '');
+    if (!same) ch.push(label);
+  });
+  return ch;
+}
+
+async function importPortfolio(file) {
+  let parsed;
+  try { parsed = await parsePortfolio(file); } catch (e) { toast(`Não foi possível ler ${file.name}: ${e.message}.`, 'error'); return; }
+  const known = new Map(S.contracts.map((c) => [c.code, c]));
+  const d = el.querySelector('#dlg');
+  let mode = 'incremental';
+  const draw = () => {
+    const full = mode === 'full', inFile = new Set(parsed.rows.map((r) => r.code));
+    const added = parsed.rows.filter((r) => !known.has(r.code));
+    const changed = parsed.rows.filter((r) => known.has(r.code)).map((r) => ({ r, ch: diff(r, known.get(r.code), full) }));
+    const upd = changed.filter((x) => x.ch.length), same = changed.length - upd.length;
+    const removed = full ? S.contracts.filter((c) => !inFile.has(c.code)) : [];
+    const risky = full && S.contracts.length && removed.length > S.contracts.length * 0.3;
+    const list = (items, fmt) => `<ul class="files" style="max-height:160px;overflow:auto">${items.map(fmt).join('')}</ul>`;
+    d.innerHTML = `<form method="dialog" style="display:grid;gap:14px">
+      <h2>Importar projetos</h2>
+      <p class="note" style="margin:0"><strong>${esc(file.name)}</strong> · ${parsed.rows.length} contratos reconhecidos${parsed.dup ? ` · ${parsed.dup} linhas repetidas (vale a última)` : ''}${parsed.skipped.length ? ` · ${parsed.skipped.length} ignorados: ${esc(parsed.skipped.join(', '))}` : ''}</p>
+      <div class="modes" role="radiogroup" aria-label="Tipo de carga">
+        <label><input type="radio" name="pm" value="incremental" ${!full ? 'checked' : ''}> <span><strong>Incremental</strong> — inclui novos e atualiza os do arquivo; células vazias e contratos fora do arquivo são mantidos; nome e cliente editados manualmente são preservados</span></label>
+        <label><input type="radio" name="pm" value="full" ${full ? 'checked' : ''}> <span><strong>Atualização completa</strong> — o arquivo passa a ser o portfólio: todos os campos vêm do arquivo e contratos que não estão nele são excluídos</span></label>
+      </div>
+      <dl class="kv">
+        <dt>Novos</dt><dd>${added.length}</dd>
+        <dt>Com alterações</dt><dd>${upd.length}</dd>
+        <dt>Sem alteração</dt><dd>${same}</dd>
+        <dt>Excluídos</dt><dd class="${removed.length ? 'c-bad' : ''}">${full ? removed.length : '— (mantidos na carga incremental)'}</dd>
+      </dl>
+      ${added.length ? `<details><summary>Novos (${added.length})</summary>${list(added, (r) => `<li>${esc(r.code)} · ${esc(r.name || '')}</li>`)}</details>` : ''}
+      ${upd.length ? `<details><summary>Alterados (${upd.length})</summary>${list(upd, (x) => `<li>${esc(x.r.code)} · ${esc(known.get(x.r.code).name)} — <span class="code">${esc(x.ch.join(', '))}</span></li>`)}</details>` : ''}
+      ${removed.length ? `<details open><summary>Serão excluídos (${removed.length})</summary>${list(removed, (c) => `<li>${esc(c.code)} · ${esc(c.name)}</li>`)}</details>` : ''}
+      ${risky ? `<p class="msg err" style="margin:0">Atenção: a carga completa exclui ${removed.length} de ${S.contracts.length} contratos. Confira se o arquivo não foi exportado com filtros.</p>` : ''}
+      <div id="imsg" class="msg err" role="status"></div>
+      <div class="row"><button class="primary" type="button" id="iok">${full ? 'Aplicar atualização completa' : 'Aplicar carga incremental'}</button><button type="button" id="icancel">Cancelar</button></div></form>`;
+    d.querySelectorAll('input[name=pm]').forEach((i) => (i.onchange = () => { mode = i.value; draw(); }));
+    d.querySelector('#icancel').onclick = () => d.close();
+    const ok = d.querySelector('#iok'), label = ok.textContent;
+    const run = () => apply(file, parsed.rows, mode, d);
+    ok.onclick = (e) => (full && removed.length ? arm(e.target, label, run) : run());
+  };
+  draw();
+  d.showModal();
+}
+
+async function apply(file, rows, mode, d) {
+  const msg = d.querySelector('#imsg'), btn = d.querySelector('#iok');
+  btn.disabled = true; msg.className = 'msg'; msg.textContent = 'Gravando…';
+  const { data, error } = await supabase.rpc('import_contracts', { p_rows: rows, p_mode: mode, p_file: file.name });
+  if (error) {
+    btn.disabled = false; msg.className = 'msg err';
+    msg.textContent = /import_contracts|schema cache|does not exist/i.test(error.message) ? 'O banco ainda não tem a função de importação. Aplique a migração supabase/migrations/0002_contract_imports.sql.' : error.message;
+    return;
+  }
+  d.close();
+  await loadContracts(); drawFilters(); render(); drawImports(); notify('contracts');
+  toast(`${file.name}: ${data.added} novos, ${data.updated} atualizados${mode === 'full' ? `, ${data.removed} excluídos` : ''}.`);
+}
+
+async function drawImports() {
+  const box = el.querySelector('#imports');
+  if (!box) return;
+  const { data, error } = await supabase.from('contract_imports').select('file_name,mode,rows_in_file,added,updated,removed,created_at').order('created_at', { ascending: false }).limit(8);
+  if (error || !data?.length) { box.hidden = true; return; }
+  box.hidden = false;
+  box.querySelector('ul').innerHTML = data.map((f) => `<li><strong>${esc(f.file_name)}</strong> · ${new Date(f.created_at).toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short' })} · ${f.mode === 'full' ? 'atualização completa' : 'incremental'} · ${f.rows_in_file} no arquivo: ${f.added} novos, ${f.updated} atualizados${f.mode === 'full' ? `, ${f.removed} excluídos` : ''}</li>`).join('');
 }
